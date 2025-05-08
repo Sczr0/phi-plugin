@@ -103,14 +103,19 @@
                 "desc": "放榜<br>eg1: /ranklist<br>eg2: /ranklist 520"
             },
             {
-                "title": "/godlist<br>/封神榜",
-                "eg": "/ranklist",
-                "desc": "放榜"
-            },
-            {
                 "title": "/song",
                 "eg": "/song <曲目>",
                 "desc": "查询曲目图鉴<br>eg: /song 996"
+            },
+            {
+                "title": "/cmt",
+                "eg": "/cmt <曲名> <难度?>(换行)<内容>",
+                "desc": "评论曲目，难度默认为IN<br>eg: /cmt 996 HD<br>好玩"
+            },
+            {
+                "title": "/recmt",
+                "eg": "/recmt <评论ID>",
+                "desc": "查看并确认是否删评，仅发送者和主人权限，需要二次确认"
             },
             {
                 "title": "/table",
