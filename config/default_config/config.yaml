@@ -104,3 +104,7 @@ GuessTipsAnsTime: 30
 #  ************ 【其他设置】 *************
 #  认证 Token
 VikaToken: ""
+
+# Phigros sessionToken 相关API的 URL，用于云端获取和同步绑定信息
+# 如果留空，则禁用通过 /bind 命令从云端自动获取 token 的功能
+textJsApiBaseUrl: ""

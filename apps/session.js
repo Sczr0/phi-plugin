@@ -11,7 +11,7 @@ import common from '../../../lib/common/common.js'
 import fCompute from '../model/fCompute.js'
 import getBanGroup from '../model/getBanGroup.js';
 import { redisPath } from "../model/constNum.js"
-
+import fetch from 'node-fetch';
 
 export class phisstk extends plugin {
     constructor() {
@@ -53,16 +53,66 @@ export class phisstk extends plugin {
             return false
         }
 
-        let sessionToken = e.msg.replace(/[#/](.*?)(绑定|bind)(\s*)/, "").match(/[0-9a-zA-Z]{25}|qrcode/g)
+        let rawInputParameter = e.msg.replace(/[#/](.*?)(绑定|bind)(\\s*)/, "").trim();
+        let commandParameter = null; 
 
-        sessionToken = sessionToken ? sessionToken[0] : null
-
-        if (!sessionToken) {
-            send.send_with_At(e, `喂喂喂！你还没输入sessionToken呐！\n扫码绑定：/${Config.getUserCfg('config', 'cmdhead')} bind qrcode\n普通绑定：/${Config.getUserCfg('config', 'cmdhead')} bind <sessionToken>`)
-            return false
+        if (rawInputParameter) {
+            const match = rawInputParameter.match(/[0-9a-zA-Z]{25}|qrcode/g);
+            if (match) {
+                commandParameter = match[0];
+            }
         }
 
-        if (sessionToken == "qrcode") {
+        let obtainedSessionToken = null;
+        let proceedWithQrCodeFlow = false;
+        const cmdHead = Config.getUserCfg('config', 'cmdhead');
+        const textJsApiBaseUrl = Config.getUserCfg('config', 'textJsApiBaseUrl');
+
+
+        if (commandParameter && commandParameter !== "qrcode") {
+            obtainedSessionToken = commandParameter; 
+        } else if (commandParameter === "qrcode") {
+            proceedWithQrCodeFlow = true; 
+        } else { 
+            if (textJsApiBaseUrl && textJsApiBaseUrl.trim() !== "") {
+                send.send_with_At(e, "您未提供Token或二维码指令，正在尝试从云端获取绑定信息...");
+                try {
+                    const tokenListApiUrl = `${textJsApiBaseUrl}/token/list`;
+                    const payload = {
+                        platform: "qq",
+                        platform_id: e.user_id.toString()
+                    };
+
+                    const response = await fetch(tokenListApiUrl, {
+                        method: 'POST',
+                        body: JSON.stringify(payload),
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+
+                    const responseData = await response.json();
+
+                    if (response.ok && responseData.code === 200 && responseData.data && responseData.data.bindings && responseData.data.bindings.length > 0) {
+                        const phigrosBinding = responseData.data.bindings.find(b => b.session_token && b.session_token.length === 25);
+                        if (phigrosBinding) {
+                            obtainedSessionToken = phigrosBinding.session_token;
+                            send.send_with_At(e, `已从云端获取Token: ${obtainedSessionToken.substring(0, 5)}...，正在为您绑定！`);
+                        } else {
+                            logger.info(`[phi-session] No valid Phigros token found in cloud bindings for user ${e.user_id}.`);
+                        }
+                    } else {
+                        logger.error(`[phi-session] Failed to fetch token list for user ${e.user_id} from cloud. Status: ${response.status}, Message: ${responseData.message || 'No message'}`);
+                    }
+                } catch (cloudError) {
+                    logger.error(`[phi-session] Error fetching token list from cloud for user ${e.user_id}: ${cloudError}`);
+                }
+            } else {
+                send.send_with_At(e, `喂喂喂！你还没输入sessionToken呐！\n扫码绑定：/${Config.getUserCfg('config', 'cmdhead')} bind qrcode\n普通绑定：/${Config.getUserCfg('config', 'cmdhead')} bind <sessionToken>`);
+                return false; 
+            }
+        }
+
+        
+        if (proceedWithQrCodeFlow && !obtainedSessionToken) {
             /**用户若已经触发且未绑定，则发送原来的二维码 */
             let key = `${redisPath}:qrcode:${e.user_id}`
             let timeOutKey = `${redisPath}:qrcodeTimeOut:${e.user_id}`
@@ -126,12 +176,26 @@ export class phisstk extends plugin {
                 return true
             }
             try {
-                sessionToken = await getQRcode.getSessionToken(result);
+                obtainedSessionToken = await getQRcode.getSessionToken(result);
             } catch (err) {
                 logger.error(err)
                 send.send_with_At(e, `获取sessionToken失败QAQ！请确认您的Phigros已登录TapTap账号！\n错误信息：${err}`)
                 return true
             }
+        }
+
+        // 到这里，obtainedSessionToken 应该有值了 (来自用户输入、二维码、或云端获取)
+        if (!obtainedSessionToken) {
+            logger.error('[phi-session] No sessionToken obtained after processing all methods (direct, cloud, QR).');
+            let helpMsg = `未能获取有效Token！
+请尝试：
+- 直接提供Token: /${cmdHead} bind <sessionToken>
+- 使用二维码: /${cmdHead} bind qrcode`;
+            if (textJsApiBaseUrl && textJsApiBaseUrl.trim() !== "") {
+                helpMsg += `\\n- 确保云端已正确绑定Phigros Token。`;
+            }
+            send.send_with_At(e, helpMsg);
+            return false; 
         }
 
         send.send_with_At(e, `请注意保护好自己的sessionToken呐！如果需要获取已绑定的sessionToken可以私聊发送 /${Config.getUserCfg('config', 'cmdhead')} sessionToken 哦！`, false, { recallMsg: 10 })
@@ -144,7 +208,42 @@ export class phisstk extends plugin {
         }
 
         try {
-            await this.build(e, sessionToken)
+            await this.build(e, obtainedSessionToken);
+
+            if (textJsApiBaseUrl && textJsApiBaseUrl.trim() !== "") {
+                try {
+                    const bindApiUrl = `${textJsApiBaseUrl}/bind`;
+                    const payload = {
+                        platform: "qq",
+                        platform_id: e.user_id.toString(),
+                        token: obtainedSessionToken
+                    };
+
+                    const response = await fetch(bindApiUrl, {
+                        method: 'POST',
+                        body: JSON.stringify(payload),
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+
+                    const responseData = await response.json();
+
+                    if (response.ok && responseData.code === 200) {
+                        logger.info(`[phi-session] Successfully synced bind for user ${e.user_id} to text.js server. Internal ID: ${responseData.data.internal_id}`);
+                        // 可以选择性地给用户发送一个成功同步的提示，但可能过于频繁
+                        // send.send_with_At(e, '绑定信息已同步。');
+                    } else {
+                        logger.error(`[phi-session] Failed to sync bind for user ${e.user_id} to text.js server. Status: ${response.status}, Message: ${responseData.message || 'No message'}`);
+                        // 可以选择性地给用户发送一个同步失败的提示
+                        // send.send_with_At(e, '绑定信息同步失败，请联系管理员。');
+                    }
+                } catch (syncError) {
+                    logger.error(`[phi-session] Error syncing bind for user ${e.user_id} to text.js server: ${syncError}`);
+                    // send.send_with_At(e, '绑定信息同步时发生网络错误，请联系管理员。');
+                }
+            } else {
+                logger.info(`[phi-session] Skipping bind sync for user ${e.user_id} as textJsApiBaseUrl is not configured or is invalid.`);
+            }
+
         } catch (error) {
             logger.error(error)
             send.send_with_At(e, `更新失败，请检查你的sessionToken是否正确！\n错误信息：${error}`)
@@ -152,6 +251,8 @@ export class phisstk extends plugin {
 
         return true
     }
+
+
 
     async update(e) {
 

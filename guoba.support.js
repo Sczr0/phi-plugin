@@ -445,6 +445,16 @@ export function supportGuoba() {
                         placeholder: '请输入token',
                     },
                 },
+                {
+                    field: 'textJsApiBaseUrl',
+                    label: 'ApiBaseUrl',
+                    bottomHelpMessage: '如果留空，则禁用通过 /bind 命令从云端自动获取 token 的功能',
+                    component: 'Input',
+                    required: false,
+                    componentProps: {
+                        placeholder: '请输入地址',
+                    },
+                },
             ],
             // 获取配置数据方法（用于前端填充显示数据）
             getConfigData() {
