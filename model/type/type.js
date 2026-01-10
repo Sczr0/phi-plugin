@@ -79,6 +79,7 @@
  * @typedef {'timeout'} timeout 渲染超时时间
  * @typedef {'waitingTimeout'} waitingTimeout 等待超时时间
  * @typedef {'renderNum'} renderNum 并行渲染数量
+ * @typedef {'renderQueueMax'} renderQueueMax 渲染队列上限
  * @typedef {'commentsAPage'} commentsAPage 每页最大渲染评论数量
  * @typedef {'B19MaxNum'} B19MaxNum B19最大限制
  * @typedef {'HistoryDayNum'} HistoryDayNum 历史成绩单日数量
@@ -128,6 +129,7 @@
  * |timeout
  * |waitingTimeout
  * |renderNum
+ * |renderQueueMax
  * |commentsAPage
  * |B19MaxNum
  * |HistoryDayNum

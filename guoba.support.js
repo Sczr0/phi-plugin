@@ -94,6 +94,18 @@ export function supportGuoba() {
                     },
                 },
                 {
+                    field: 'renderQueueMax',
+                    label: '渲染队列上限',
+                    bottomHelpMessage: '队列过长会直接拒绝，避免内存占用；0为不限制，修改后重启生效',
+                    component: 'InputNumber',
+                    required: true,
+                    componentProps: {
+                        min: 0,
+                        max: 10000,
+                        placeholder: '请输入渲染队列上限',
+                    },
+                },
+                {
                     label: '',
                     component: 'Divider'
                 },
