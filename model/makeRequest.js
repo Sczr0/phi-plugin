@@ -254,7 +254,18 @@ import { APIBASEURL } from './constNum.js';
  * @property {chartsTagString[]} tags 标签内容
  */
 
-const agent = new https.Agent({ rejectUnauthorized: false });
+// API 请求复用连接：开启 keepAlive，减少频繁建连开销
+const httpsAgent = new https.Agent({
+    rejectUnauthorized: false,
+    keepAlive: true,
+    maxSockets: 32,
+    maxFreeSockets: 16,
+});
+
+const apiClient = axios.create({
+    httpsAgent,
+    headers: { 'Content-Type': 'application/json' },
+});
 
 export default class makeRequest {
 
@@ -606,14 +617,15 @@ async function makeFetch(url, params, method = 'POST') {
     if (Config.getUserCfg('config', 'debug') > 3) {
         logger.info(`[phi-plugin] 请求API: ${url}`, JSON.stringify(params));
     }
+    const timeout = Math.max(0, Number(Config.getUserCfg('config', 'apiTimeout') ?? 0)) || 10000
     let result
     try {
         switch (method.toUpperCase()) {
             case 'GET':
-                result = await axios.get(url, { params: params });
+                result = await apiClient.get(url, { params, timeout });
                 break;
             case 'POST':
-                result = await axios.post(url, JSON.stringify(params), { headers: { 'Content-Type': 'application/json' } });
+                result = await apiClient.post(url, params ?? {}, { timeout });
                 break;
             default:
                 throw new Error(`不支持的请求方法: ${method}`);

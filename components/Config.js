@@ -142,6 +142,35 @@ class Config {
     }
 
     /**
+     * 配置变更回调：清理 getInfo 内部缓存，避免热路径返回旧数据
+     * - 触发源：watch() 监听到 config.yaml 变更
+     */
+    change_config() {
+        this._notifyGetInfoClearCache('Config.change_config')
+    }
+
+    /**
+     * 配置变更回调：清理 getInfo 内部缓存，避免 otherinfo.yaml 变更后 all_info/getill 仍使用旧缓存
+     * - 触发源：watch() 监听到 otherinfo.yaml 变更
+     */
+    change_otherinfo() {
+        this._notifyGetInfoClearCache('Config.change_otherinfo')
+    }
+
+    /**
+     * 动态通知 getInfo 清缓存（避免与 getInfo 的静态 import 形成循环依赖）
+     * @param {string} reason
+     */
+    _notifyGetInfoClearCache(reason) {
+        import('../model/getInfo.js')
+            .then(mod => {
+                const getInfo = mod?.default
+                if (getInfo?.clearCache) getInfo.clearCache(reason)
+            })
+            .catch(() => { })
+    }
+
+    /**
      * @overload
      * @param {'config'} name 文件名
      * @param {configName} key 修改的key值

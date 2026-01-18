@@ -10,6 +10,11 @@ import fCompute from './fCompute.js'
 import logger from '../components/Logger.js'
 import Chart from './class/Chart.js'
 
+/** URL 判定（用于区分本地文件名与在线地址） */
+const URL_REG = /^(?:(http|https|ftp):\/\/)((?:[\w-]+\.)+[a-z0-9]+)((?:\/[^/?#]*)+)?(\?[^#]+)?(#.+)?$/i
+/** infoPath 监听防抖，避免批量更新触发频繁全量重载 */
+const INFO_WATCH_DEBOUNCE_MS = 300
+
 
 export default new class getInfo {
 
@@ -93,16 +98,87 @@ export default new class getInfo {
          * @type {Record<idString, Partial<Record<levelKind, updatedChartObject>>>}
          */
         this.updatedChart = {}
+
+        /** 性能优化：缓存 all_info 结果，避免在热路径频繁对象展开拷贝 */
+        /** @type {Map<string, Record<idString, any>>} */
+        this._allInfoCache = new Map()
+        /** 性能优化：缓存曲绘/资源路径解析结果，减少重复 existsSync */
+        /** @type {Map<string, string>} */
+        this._illCache = new Map()
+        /** @type {Map<string, string>} */
+        this._chartImgCache = new Map()
+        /** @type {Map<string, string>} */
+        this._tableImgCache = new Map()
+        /** @type {Map<string, string>} */
+        this._chapIllCache = new Map()
+
+        /** watchInfoPath：防止重复注册 chokidar watcher 导致句柄泄漏 */
+        /** @type {any} */
+        this._infoPathWatcher = null
+        /** @type {NodeJS.Timeout | null} */
+        this._infoPathReloadTimer = null
     }
 
     static initIng = false
 
+    /**
+     * 清理内部缓存（用于 init/配置变更后，避免返回旧数据）
+     * @param {string} [reason]
+     */
+    clearCache(reason = '') {
+        try {
+            this._allInfoCache?.clear?.()
+            this._illCache?.clear?.()
+            this._chartImgCache?.clear?.()
+            this._tableImgCache?.clear?.()
+            this._chapIllCache?.clear?.()
+            if (Config.getUserCfg('config', 'debug') > 3 && reason) {
+                logger.info(`[phi-plugin] 清理缓存: ${reason}`)
+            }
+        } catch (err) {
+            // 清缓存失败不应影响主流程
+            logger.warn(`[phi-plugin] 清理缓存失败: ${reason}`)
+            logger.warn(err)
+        }
+    }
+
+    /**
+     * 快速判断曲目是否存在（避免为了校验而 new SongsInfo / 合并大对象）
+     * @param {idString} id
+     * @param {boolean} [original=false] 仅使用原版曲库（忽略 otherinfo 配置）
+     */
+    hasInfo(id, original = false) {
+        const mode = original ? 0 : Config.getUserCfg('config', 'otherinfo')
+        if (mode !== 2) {
+            if (this.ori_info?.[id] || this.sp_info?.[id]) return true
+        }
+        if (mode === 1 || mode === 2) {
+            const other = Config.getUserCfg('otherinfo')
+            return !!other?.[id]
+        }
+        return false
+    }
+
     async init() {
 
         if (Config.getUserCfg('config', 'watchInfoPath')) {
-            chokidar.watch(infoPath).on('change', () => {
-                this.init()
-            });
+            if (!this._infoPathWatcher) {
+                this._infoPathWatcher = chokidar.watch(infoPath)
+                this._infoPathWatcher.on('change', () => {
+                    // 防抖：批量写入时只重载一次
+                    if (this._infoPathReloadTimer) clearTimeout(this._infoPathReloadTimer)
+                    this._infoPathReloadTimer = setTimeout(() => {
+                        this._infoPathReloadTimer = null
+                        this.init()
+                    }, INFO_WATCH_DEBOUNCE_MS)
+                })
+            }
+        } else if (this._infoPathWatcher) {
+            // 配置关闭后释放 watcher，避免句柄泄漏
+            try {
+                this._infoPathWatcher.close?.()
+            } catch { }
+            this._infoPathWatcher = null
         }
         if (!fs.existsSync('./plugins/phi-plugin/resources/original_ill/.git')) {
             logger.error(`[phi-plugin] 未下载曲绘文件，建议使用 /phi downill 命令进行下载`)
@@ -113,6 +189,7 @@ export default new class getInfo {
         logger.info(`[phi-plugin]初始化曲目信息`)
 
         this.initIng = true
+        this.clearCache('getInfo.init')
 
         /**
          * @type {Record<string, string[]>}
@@ -445,22 +522,16 @@ export default new class getInfo {
      * @returns {SongsInfo | undefined} 曲目信息对象
      */
     info(id, original = false) {
-        let result
-        switch (original ? 0 : Config.getUserCfg('config', 'otherinfo')) {
-            case 0: {
-                result = { ...this.ori_info, ...this.sp_info }
-                break;
-            }
-            case 1: {
-                result = { ...this.ori_info, ...this.sp_info, ...Config.getUserCfg('otherinfo') }
-                break;
-            }
-            case 2: {
-                result = Config.getUserCfg('otherinfo')
-                break;
-            }
+        const mode = original ? 0 : Config.getUserCfg('config', 'otherinfo')
+        /** @type {any} */
+        let raw
+        if (mode !== 2) {
+            raw = this.ori_info?.[id] || this.sp_info?.[id]
         }
-        return result[id] ? new SongsInfo(result[id]) : undefined
+        if (!raw && (mode === 1 || mode === 2)) {
+            raw = Config.getUserCfg('otherinfo')?.[id]
+        }
+        return raw ? new SongsInfo(raw) : undefined
     }
 
     /**
@@ -469,20 +540,35 @@ export default new class getInfo {
      * @returns {Record<idString, SongsInfo>} 所有曲目信息对象
      */
     all_info(original = false) {
-        switch (original ? 0 : Config.getUserCfg('config', 'otherinfo')) {
+        const mode = original ? 0 : Config.getUserCfg('config', 'otherinfo')
+        const cacheKey = `${original ? 1 : 0}:${mode}`
+        const cached = this._allInfoCache.get(cacheKey)
+        if (cached) return cached
+
+        /** @type {Record<idString, any>} */
+        let result = {}
+        switch (mode) {
             case 0: {
-                return { ...this.ori_info, ...this.sp_info }
+                result = Object.assign({}, this.ori_info, this.sp_info)
+                break
             }
             case 1: {
-                return { ...this.ori_info, ...this.sp_info, ...Config.getUserCfg('otherinfo') }
+                result = Object.assign({}, this.ori_info, this.sp_info, Config.getUserCfg('otherinfo') || {})
+                break
             }
             case 2: {
-                return Config.getUserCfg('otherinfo')
+                // otherinfo 本身来自 Config 缓存，直接引用即可
+                result = Config.getUserCfg('otherinfo') || {}
+                break
             }
             default: {
-                return { ...this.ori_info, ...this.sp_info }
+                result = Object.assign({}, this.ori_info, this.sp_info)
+                break
             }
         }
+
+        this._allInfoCache.set(cacheKey, result)
+        return result
     }
 
     /**
@@ -532,7 +618,7 @@ export default new class getInfo {
             let dis = fCompute.jaroWinklerDistance(mic, std)
             if (dis >= Distance) {
                 usernick[std].forEach((id, i) => {
-                    if (this.info(id) == undefined) return; //过滤无效id
+                    if (!this.hasInfo(id, original)) return; //过滤无效id（避免高成本 info() 分配）
                     result.push({ id: usernick[std][i], dis: dis })
                 })
             }
@@ -544,14 +630,14 @@ export default new class getInfo {
         /**
          * @type {idString[]}
          */
-        let all = []
+        const all = []
+        const seen = new Set()
         for (let i of result) {
-
-            if (all.includes(i.id)) continue //去重
+            // 去重（避免 O(n^2) 的 includes）
+            if (seen.has(i.id)) continue
             /**如果有完全匹配的曲目则放弃剩下的 */
-            if (result[0].dis == 1 && i.dis < 1) break
-
-
+            if (result[0]?.dis == 1 && i.dis < 1) break
+            seen.add(i.id)
             all.push(i.id)
         }
 
@@ -579,10 +665,14 @@ export default new class getInfo {
      * @return {string} 网址或文件地址
     */
     getill(id, kind = 'common') {
+        const mode = Config.getUserCfg('config', 'otherinfo')
+        const cacheKey = `${mode}:${id}:${kind}`
+        const cached = this._illCache.get(cacheKey)
+        if (cached) return cached
+
         const songsinfo = this.all_info()[id]
         let ans = songsinfo?.illustration
-        let reg = /^(?:(http|https|ftp):\/\/)((?:[\w-]+\.)+[a-z0-9]+)((?:\/[^/?#]*)+)?(\?[^#]+)?(#.+)?$/i
-        if (ans && !reg.test(ans)) {
+        if (ans && !URL_REG.test(ans)) {
             ans = path.join(ortherIllPath, ans)
         } else if (this.ori_info?.[id] || this.sp_info?.[id]) {
             if (this.ori_info?.[id]) {
@@ -619,6 +709,7 @@ export default new class getInfo {
             logger.warn(id, '背景不存在')
             ans = path.join(imgPath, 'phigros.png')
         }
+        this._illCache.set(cacheKey, ans)
         return ans
     }
 
@@ -629,11 +720,14 @@ export default new class getInfo {
      */
     getChartImg(songId, dif) {
         const id = songId.replace(/.0$/, '');
-        if (fs.existsSync(path.join(originalIllPath, "chartimg", dif, `${id}.png`))) {
-            return path.join(originalIllPath, "chartimg", dif, `${id}.png`)
-        } else {
-            return `${Config.getUserCfg('config', 'onLinePhiIllUrl')}/chartimg/${dif}/${id}.png`
-        }
+        const cacheKey = `${dif}:${id}`
+        const cached = this._chartImgCache.get(cacheKey)
+        if (cached) return cached
+        const ans = fs.existsSync(path.join(originalIllPath, "chartimg", dif, `${id}.png`))
+            ? path.join(originalIllPath, "chartimg", dif, `${id}.png`)
+            : `${Config.getUserCfg('config', 'onLinePhiIllUrl')}/chartimg/${dif}/${id}.png`
+        this._chartImgCache.set(cacheKey, ans)
+        return ans
     }
 
     /**
@@ -641,11 +735,14 @@ export default new class getInfo {
      * @param {number} dif 难度
      */
     getTableImg(dif) {
-        if (fs.existsSync(path.join(originalIllPath, "table", `${dif}.png`))) {
-            return path.join(originalIllPath, "table", `${dif}.png`)
-        } else {
-            return `${Config.getUserCfg('config', 'onLinePhiIllUrl')}/table/${dif}.png`
-        }
+        const cacheKey = `${dif}`
+        const cached = this._tableImgCache.get(cacheKey)
+        if (cached) return cached
+        const ans = fs.existsSync(path.join(originalIllPath, "table", `${dif}.png`))
+            ? path.join(originalIllPath, "table", `${dif}.png`)
+            : `${Config.getUserCfg('config', 'onLinePhiIllUrl')}/table/${dif}.png`
+        this._tableImgCache.set(cacheKey, ans)
+        return ans
     }
 
     /**
@@ -653,11 +750,14 @@ export default new class getInfo {
      * @param {string} name 标准章节名
      */
     getChapIll(name) {
-        if (fs.existsSync(path.join(originalIllPath, "chap", `${name}.png`))) {
-            return path.join(originalIllPath, "chap", `${name}.png`)
-        } else {
-            return `${Config.getUserCfg('config', 'onLinePhiIllUrl')}/chap/${name}.png`
-        }
+        const cacheKey = `${name}`
+        const cached = this._chapIllCache.get(cacheKey)
+        if (cached) return cached
+        const ans = fs.existsSync(path.join(originalIllPath, "chap", `${name}.png`))
+            ? path.join(originalIllPath, "chap", `${name}.png`)
+            : `${Config.getUserCfg('config', 'onLinePhiIllUrl')}/chap/${name}.png`
+        this._chapIllCache.set(cacheKey, ans)
+        return ans
     }
 
     /**

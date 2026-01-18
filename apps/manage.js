@@ -114,9 +114,10 @@ export class phiset extends phiPluginBase {
             return false
         }
         try {
+            const list = fs.readdirSync(backupPath)
             let msg = ''
-            for (let i in fs.readdirSync(backupPath)) {
-                msg += `[${i}]${fs.readdirSync(backupPath)[i]}\n`
+            for (let i = 0; i < list.length; i++) {
+                msg += `[${i}]${list[i]}\n`
             }
             send.send_with_At(e, '请选择需要恢复的备份文件：\n' + msg)
             this.setContext('doRestore', false, 30, '超时已取消，请注意 @Bot 进行回复哦！')
@@ -134,10 +135,12 @@ export class phiset extends phiPluginBase {
         }
 
         try {
-            let fileName = fs.readdirSync(backupPath)[Number(e.msg.replace(/\s*/g, ''))]
+            const idx = Number(e.msg.replace(/\s*/g, ''))
+            const list = fs.readdirSync(backupPath)
+            let fileName = list[idx]
             let filePath = path.join(backupPath, fileName)
             await getBackup.restore(filePath)
-            send.send_with_At(e, `[${e.msg}] ${fs.readdirSync(backupPath).reverse()[Number(e.msg.replace(/\s*/g, ''))]} 恢复成功`)
+            send.send_with_At(e, `[${idx}] ${fileName} 恢复成功`)
         } catch (err) {
             logger.info(err)
             send.send_with_At(e, [`第[${e.msg}]项不存在QAQ！`, err])
